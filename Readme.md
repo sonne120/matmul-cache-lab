@@ -1,4 +1,4 @@
-# Fast Matrix Multiplication in C++20, Compared with OpenCV
+## Fast Matrix Multiplication in C++20, Compared with OpenCV
 
 A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference.
 
@@ -197,7 +197,7 @@ When OpenCV is available (`find_package(OpenCV QUIET)`), the optional `matmul-op
 
 ---
 
-## Limitations & Notes
+### Limitations & Notes
 
 - **Hardware counters:** L1/LL cache-miss and TLB-miss counters were not collected; the L1 set-aliasing explanation for power-of-two strides is inferred from the size pattern rather than directly measured.
 - **Accelerate baseline:** `accelerate_dgemm` achieves ~170B multiply-adds/s (~340 GFLOP/s) on a single thread (`VECLIB_MAXIMUM_THREADS=1`), which exceeds standard NEON throughput and likely reflects Apple AMX usage. With 8 threads (`VECLIB_MAXIMUM_THREADS=8`), it reaches 3.46 ms at `N = 1024` (another ~1.9× faster).
@@ -206,7 +206,7 @@ When OpenCV is available (`find_package(OpenCV QUIET)`), the optional `matmul-op
 
 ---
 
-## Build, Verify & Run
+### Build, Verify & Run
 
 ```sh
 # Configure and build all block-size executables (BS = 16, 32, 64, 128, 256, 512)
