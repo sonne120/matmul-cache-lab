@@ -1,11 +1,6 @@
-# High-Performance Matrix Multiplication (`DGEMM`) in C++20
+# Fast Matrix Multiplication in C++20
 
-A systematic performance engineering study of dense double-precision matrix multiplication (`C = A × B`) on **Apple Silicon**. Starting from a naive `i-j-k` triple loop, this project explores loop interchange, cache blocking/tiling, flat row-major layouts, `k`-loop unrolling, a hand-written **ARM64 NEON 4×4 micro-kernel with B-panel packing**, and compares them against **Apple Accelerate (`cblas_dgemm`)**.
-
-- **Language & Tooling:** C++20, CMake, Google Benchmark, ARM64 NEON intrinsics, Apple Accelerate, OpenCV 4 (optional)
-- **Correctness:** 216/216 automated verification checks (`--verify`) pass against the naive reference within `1e-9` relative + absolute tolerance, plus OpenCV `cv::gemm` and `cv::filter2D` cross-checks
-
----
+A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference, and an optional OpenCV target compares the kernels with `cv::gemm` and `cv::filter2D`.
 
 ## Key Results at a Glance
 
@@ -46,19 +41,6 @@ Median execution time and throughput (`1 FMA = 2 FLOPs`, so `GFLOP/s = 2·N³ / 
 - **Compiler & Flags:** C++20, `-O3 -Wall -Wextra` (`RelWithDebInfo`)
 - **Benchmarking:** Google Benchmark v1.9.5, 5 repetitions per configuration (`median` reported), `caffeinate -i` and `VECLIB_MAXIMUM_THREADS=1`
 - **Verification:** Every kernel is checked against `bad_matrix_multiply` before and after benchmarking, plus standalone `--verify` mode (`216/216` checks pass across all 6 block sizes)
-
----
-
-## Project Structure
-
-- [`src/matrix-multiply.hpp`](./src/matrix-multiply.hpp) / [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) — all 13 `DGEMM` / LU-update implementations
-- [`src/benchmark.cpp`](./src/benchmark.cpp) — Google Benchmark suite with built-in correctness checks and `GFLOP/s` counters
-- [`src/opencv_benchmark.cpp`](./src/opencv_benchmark.cpp) — optional OpenCV `cv::gemm` and `im2col + GEMM` 2D convolution benchmarks
-- [`src/main.cpp`](./src/main.cpp) — CLI entry point (`--verify` mode and Google Benchmark runner)
-- [`src/verify.hpp`](./src/verify.hpp) / [`src/verify.cpp`](./src/verify.cpp) — correctness checks behind `--verify`: every kernel against a plain reference
-- [`scripts/plot_benchmarks.py`](./scripts/plot_benchmarks.py) — zero-dependency SVG chart generator ([`docs/images/`](./docs/images))
-- [`CMakeLists.txt`](./CMakeLists.txt) — multi-`BS` build, optional OpenCV target, and `run-*` / `verify-all` targets
-- [`.gitignore`](./.gitignore) — excludes build artifacts, logs, and generated binaries
 
 ---
 
