@@ -360,4 +360,4 @@ namespace
             })
             ->Apply(configure);
 #endif
-} // namespace
+}

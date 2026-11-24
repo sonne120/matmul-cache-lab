@@ -434,5 +434,5 @@ namespace
 
     BENCHMARK(bm_color_transform_cv)->Apply(configure_gemm);
     BENCHMARK(bm_color_transform_gemm)->Apply(configure_gemm);
-} // namespace
+}
 BENCHMARK_MAIN();

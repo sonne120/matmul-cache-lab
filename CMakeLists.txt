@@ -40,7 +40,8 @@ set(verify_all_commands "")
 set(run_all_targets "")
 
 foreach(bs IN LISTS BLOCK_SIZES)
-    add_executable(matmul-bs${bs} main.cpp matrix-multiply.cpp benchmark.cpp)
+    add_executable(matmul-bs${bs}
+        src/main.cpp src/verify.cpp src/matrix-multiply.cpp src/benchmark.cpp)
     target_compile_definitions(matmul-bs${bs} PRIVATE BS=${bs})
     target_compile_options(matmul-bs${bs} PRIVATE -O3 -Wall -Wextra)
     target_link_libraries(matmul-bs${bs} PRIVATE benchmark::benchmark)
@@ -70,7 +71,7 @@ add_custom_target(verify-all
 find_package(OpenCV QUIET)
 if(OpenCV_FOUND)
     message(STATUS "OpenCV ${OpenCV_VERSION} found: enabling matmul-opencv target")
-    add_executable(matmul-opencv opencv_benchmark.cpp matrix-multiply.cpp)
+    add_executable(matmul-opencv src/opencv_benchmark.cpp src/matrix-multiply.cpp)
     target_compile_definitions(matmul-opencv PRIVATE BS=64)
     target_compile_options(matmul-opencv PRIVATE -O3 -Wall -Wextra)
     target_link_libraries(matmul-opencv PRIVATE benchmark::benchmark ${OpenCV_LIBS})

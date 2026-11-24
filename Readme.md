@@ -49,29 +49,16 @@ Median execution time and throughput (`1 FMA = 2 FLOPs`, so `GFLOP/s = 2·N³ / 
 
 ---
 
-## Build, Verify & Run
+## Project Structure
 
-```sh
-# Configure and build all block-size executables (BS = 16, 32, 64, 128, 256, 512)
-cmake -S . -B build
-cmake --build build -j 8
-
-# Run correctness verification across all variants and block sizes (216 checks)
-cmake --build build --target verify-all
-
-# Run benchmarks
-cmake --build build --target run-bs64                          # BS = 64 only
-cmake --build build --target run-all                           # All block sizes
-cmake --build build --target run-bs64 -DFILTER="neon|accel"    # Filter by regex
-cmake --build build --target run-opencv                        # Optional OpenCV + im2col suite
-```
-
-Direct binary usage:
-
-```sh
-./build/matmul-bs64 --verify
-./build/matmul-bs64 --benchmark_filter="fast_ikj|neon_4x4|accelerate_dgemm"
-```
+- [`src/matrix-multiply.hpp`](./src/matrix-multiply.hpp) / [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) — all 13 `DGEMM` / LU-update implementations
+- [`src/benchmark.cpp`](./src/benchmark.cpp) — Google Benchmark suite with built-in correctness checks and `GFLOP/s` counters
+- [`src/opencv_benchmark.cpp`](./src/opencv_benchmark.cpp) — optional OpenCV `cv::gemm` and `im2col + GEMM` 2D convolution benchmarks
+- [`src/main.cpp`](./src/main.cpp) — CLI entry point (`--verify` mode and Google Benchmark runner)
+- [`src/verify.hpp`](./src/verify.hpp) / [`src/verify.cpp`](./src/verify.cpp) — correctness checks behind `--verify`: every kernel against a plain reference
+- [`scripts/plot_benchmarks.py`](./scripts/plot_benchmarks.py) — zero-dependency SVG chart generator ([`docs/images/`](./docs/images))
+- [`CMakeLists.txt`](./CMakeLists.txt) — multi-`BS` build, optional OpenCV target, and `run-*` / `verify-all` targets
+- [`.gitignore`](./.gitignore) — excludes build artifacts, logs, and generated binaries
 
 ---
 
@@ -230,14 +217,26 @@ When OpenCV is available (`find_package(OpenCV QUIET)`), the optional `matmul-op
 
 ---
 
-## Project Structure
+## Build, Verify & Run
 
-- [`matrix-multiply.hpp`](./matrix-multiply.hpp) / [`matrix-multiply.cpp`](./matrix-multiply.cpp) — all 13 `DGEMM` / LU-update implementations
-- [`benchmark.cpp`](./benchmark.cpp) — Google Benchmark suite with built-in correctness checks and `GFLOP/s` counters
-- [`opencv_benchmark.cpp`](./opencv_benchmark.cpp) — optional OpenCV `cv::gemm` and `im2col + GEMM` 2D convolution benchmarks
-- [`main.cpp`](./main.cpp) — CLI entry point (`--verify` mode and Google Benchmark runner)
-- [`scripts/plot_benchmarks.py`](./scripts/plot_benchmarks.py) — zero-dependency SVG chart generator ([`docs/images/`](./docs/images))
-- [`CMakeLists.txt`](./CMakeLists.txt) — multi-`BS` build, optional OpenCV target, and `run-*` / `verify-all` targets
-- [`.gitignore`](./.gitignore) — excludes build artifacts, logs, and generated binaries
+```sh
+# Configure and build all block-size executables (BS = 16, 32, 64, 128, 256, 512)
+cmake -S . -B build
+cmake --build build -j 8
 
+# Run correctness verification across all variants and block sizes (216 checks)
+cmake --build build --target verify-all
 
+# Run benchmarks
+cmake --build build --target run-bs64                          # BS = 64 only
+cmake --build build --target run-all                           # All block sizes
+cmake --build build --target run-bs64 -DFILTER="neon|accel"    # Filter by regex
+cmake --build build --target run-opencv                        # Optional OpenCV + im2col suite
+```
+
+Direct binary usage:
+
+```sh
+./build/matmul-bs64 --verify
+./build/matmul-bs64 --benchmark_filter="fast_ikj|neon_4x4|accelerate_dgemm"
+```

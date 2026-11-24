@@ -39,7 +39,7 @@ namespace calculate_matrix
 
             std::fill_n(matrix, static_cast<std::size_t>(n) * static_cast<std::size_t>(n), 0.0);
         }
-    } // namespace
+    }
 
     // Scalar order i-j-k.
     void bad_matrix_multiply(double *const *MATMUL_RESTRICT C,
@@ -639,13 +639,13 @@ namespace calculate_matrix
         std::vector<double> packed(static_cast<std::size_t>(BS) * BS);
 
         // const int i4 = N & ~3; // rows covered by the 4x4 kernel
-        const int i4 = N - N % 4;   // instead of ~3
+        const int i4 = N - N % 4; // instead of ~3
 
         for (int jj = 0; jj < N; jj += BS)
         {
             const int jb = std::min(BS, N - jj);
-            //const int j4 = jb & ~3; // columns  tile covered by the 4x4 kernel
-            const int j4 = N - N % 4;
+            // const int j4 = jb & ~3; // columns  tile covered by the 4x4 kernel
+            const int j4 = jb - jb % 4;
 
             for (int kk = 0; kk < N; kk += BS)
             {
@@ -825,4 +825,4 @@ namespace calculate_matrix
         }
     }
 #endif
-} // namespace calculate_matrix
+}
