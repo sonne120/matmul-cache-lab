@@ -1,4 +1,4 @@
-## Fast Matrix Multiplication in C++20, Compared with OpenCV
+# Fast Matrix Multiplication in C++20, Compared with OpenCV
 
 A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference.
 
@@ -30,12 +30,12 @@ Median execution time and throughput (`1 FMA = 2 FLOPs`, so `GFLOP/s = 2·N³ / 
 
 ### Core Findings
 
-- **Loop interchange (`i-j-k` → `i-k-j`)** yields a **6.2–7.8×** speedup up to `N = 1024` by turning column-strided reads of `B` into sequential row streams.
-- **Cache blocking alone does not beat `fast_ikj`:** every plain blocked variant (`tiled`, `blocked`, `tiled_flat`, `tiled_flat_v2`) is slower than plain `i-k-j` whenever `BS < N`.
-- **Unrolling `k` by 4 (`ikj_k4`)** cuts `C` load/store traffic by 4× and improves speed by **15–25%** up to `N = 1024` without any blocking.
-- **Blocking + `k`-unrolling (`blocked_k4_ikj`)** reaches **2×** speedup over `fast_ikj` on non-power-of-two sizes (`N = 500, 1000, 2000`), but suffers severe **cache-set conflict penalties** at power-of-two sizes (`N = 1024, 2048`) when `BS ≤ 64`.
-- **A 4×4 ARM64 NEON micro-kernel with packed `B` (`neon_4x4`)** delivers a consistent **~2×** speedup over `fast_ikj` across all tested sizes and eliminates power-of-two sensitivity for `BS ≥ 32`.
-- **Apple Accelerate (`cblas_dgemm`)** is another **10–12×** faster than `neon_4x4` (~340 GFLOP/s single-threaded), likely leveraging Apple Silicon matrix coprocessor (AMX) hardware.
+- *Loop interchange (`i-j-k` → `i-k-j`)** yields a **6.2–7.8×** speedup up to `N = 1024` by turning column-strided reads of `B` into sequential row streams.
+- *Cache blocking alone does not beat `fast_ikj`:** every plain blocked variant (`tiled`, `blocked`, `tiled_flat`, `tiled_flat_v2`) is slower than plain `i-k-j` whenever `BS < N`.
+- *Unrolling `k` by 4 (`ikj_k4`)** cuts `C` load/store traffic by 4× and improves speed by **15–25%** up to `N = 1024` without any blocking.
+- *Blocking + `k`-unrolling (`blocked_k4_ikj`)** reaches **2×** speedup over `fast_ikj` on non-power-of-two sizes (`N = 500, 1000, 2000`), but suffers severe **cache-set conflict penalties** at power-of-two sizes (`N = 1024, 2048`) when `BS ≤ 64`.
+- *A 4×4 ARM64 NEON micro-kernel with packed `B` (`neon_4x4`)** delivers a consistent **~2×** speedup over `fast_ikj` across all tested sizes and eliminates power-of-two sensitivity for `BS ≥ 32`.
+- *Apple Accelerate (`cblas_dgemm`)** is another **10–12×** faster than `neon_4x4` (~340 GFLOP/s single-threaded), likely leveraging Apple Silicon matrix coprocessor (AMX) hardware.
 
 ![DGEMM Throughput Scaling](./docs/images/gflops_scaling.svg)
 
@@ -45,12 +45,11 @@ Median execution time and throughput (`1 FMA = 2 FLOPs`, so `GFLOP/s = 2·N³ / 
 
 ## Test Environment & Methodology
 
-- **CPU:** Apple M2 Pro (12 cores; L1 Data: 64 KiB, L1 Instruction: 128 KiB, L2 Unified: 4 MiB)
-- **Compiler & Flags:** C++20, `-O3 -Wall -Wextra` (`RelWithDebInfo`)
-- **Benchmarking:** Google Benchmark v1.9.5, 5 repetitions per configuration (`median` reported), `caffeinate -i` and `VECLIB_MAXIMUM_THREADS=1`
-- **Verification:** Every kernel is checked against `bad_matrix_multiply` before and after benchmarking, plus standalone `--verify` mode (`216/216` checks pass across all 6 block sizes)
+- *CPU:** Apple M2 Pro (12 cores; L1 Data: 64 KiB, L1 Instruction: 128 KiB, L2 Unified: 4 MiB)
+- *Compiler & Flags:** C++20, `-O3 -Wall -Wextra` (`RelWithDebInfo`)
+- *Benchmarking:** Google Benchmark v1.9.5, 5 repetitions per configuration (`median` reported), `caffeinate -i` and `VECLIB_MAXIMUM_THREADS=1`
+- *Verification:** Every kernel is checked against `bad_matrix_multiply` before and after benchmarking, plus standalone `--verify` mode (`216/216` checks pass across all 6 block sizes)
 
----
 
 ## Implemented Variants
 
