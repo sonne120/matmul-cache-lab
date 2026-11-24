@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="360" viewBox="0 0 760 360" role="img" aria-label="Speedup vs Naive i-j-k at N=1024">
+  <rect width="760" height="360" rx="10" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
+  <style>
+    .title { font: 700 16px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .subtitle { font: 400 12px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #656d76; }
+    .axis { font: 400 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #656d76; }
+    .label { font: 600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+    .legend { font: 500 11.5px -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; fill: #1f2328; }
+  </style>
+  <text x="24" y="30" class="title">Speedup vs Naive i-j-k Baseline (N = 1024, Double Precision)</text>
+  <text x="24" y="48" class="subtitle">Apple M2 Pro (-O3, median of 5 runs). Reference: accelerate_dgemm reaches 191.8× (6.35 ms).</text>
+  <line x1="185.0" y1="68" x2="185.0" y2="312" stroke="#eaeef2" stroke-width="1"/>
+  <text x="185.0" y="330" text-anchor="middle" class="axis">0×</text>
+  <line x1="294.1" y1="68" x2="294.1" y2="312" stroke="#eaeef2" stroke-width="1"/>
+  <text x="294.1" y="330" text-anchor="middle" class="axis">5×</text>
+  <line x1="403.2" y1="68" x2="403.2" y2="312" stroke="#eaeef2" stroke-width="1"/>
+  <text x="403.2" y="330" text-anchor="middle" class="axis">10×</text>
+  <line x1="512.3" y1="68" x2="512.3" y2="312" stroke="#eaeef2" stroke-width="1"/>
+  <text x="512.3" y="330" text-anchor="middle" class="axis">15×</text>
+  <line x1="621.4" y1="68" x2="621.4" y2="312" stroke="#eaeef2" stroke-width="1"/>
+  <text x="621.4" y="330" text-anchor="middle" class="axis">20×</text>
+  <text x="425.0" y="350" text-anchor="middle" class="axis">Speedup (higher is better)</text>
+  <line x1="185" y1="68" x2="185" y2="312" stroke="#8c959f" stroke-width="1.2"/>
+  <text x="173" y="92.3" text-anchor="end" class="legend">naive_ijk</text>
+  <rect x="185" y="75.3" width="21.8" height="26" rx="4" fill="#8b949e"/>
+  <text x="214.8" y="92.3" class="label">1.0× (1218 ms)</text>
+  <text x="173" y="133.0" text-anchor="end" class="legend">tiled_bs64</text>
+  <rect x="185" y="116.0" width="115.6" height="26" rx="4" fill="#6e7781"/>
+  <text x="308.6" y="133.0" class="label">5.3× (228 ms)</text>
+  <text x="173" y="173.7" text-anchor="end" class="legend">fast_ikj</text>
+  <rect x="185" y="156.7" width="168.0" height="26" rx="4" fill="#0969da"/>
+  <text x="361.0" y="173.7" class="label">7.7× (158 ms)</text>
+  <text x="173" y="214.3" text-anchor="end" class="legend">ikj_k4</text>
+  <rect x="185" y="197.3" width="209.5" height="26" rx="4" fill="#8250df"/>
+  <text x="402.5" y="214.3" class="label">9.6× (127 ms)</text>
+  <text x="173" y="255.0" text-anchor="end" class="legend">neon_4x4 (bs64)</text>
+  <rect x="185" y="238.0" width="360.0" height="26" rx="4" fill="#2da44e"/>
+  <text x="553.0" y="255.0" class="label">16.5× (73.9 ms)</text>
+  <text x="173" y="295.7" text-anchor="end" class="legend">neon_4x4 (bs16)</text>
+  <rect x="185" y="278.7" width="410.2" height="26" rx="4" fill="#1a7f37"/>
+  <text x="603.2" y="295.7" class="label">18.8× (64.9 ms)</text>
+</svg>
