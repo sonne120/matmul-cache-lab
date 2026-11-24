@@ -1,6 +1,14 @@
-# Fast Matrix Multiplication in C++20
+## Fast Matrix Multiplication in C++20, Compared with OpenCV
 
-A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference, and an optional OpenCV target compares the kernels with `cv::gemm` and `cv::filter2D`.
+A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference.
+
+The same kernels are also compared with the OpenCV library on `cv::Mat` data, in an optional target that is built when OpenCV 4 is installed. Three workloads are measured, each implemented both ways:
+
+- **Dense matrix product:** the NEON kernel against `cv::gemm`, which is about 8× faster at `N = 1024`.
+- **2D convolution (32 filters, 5×5):** `im2col` followed by the NEON kernel against `cv::filter2D`, which run at the same speed.
+- **Per-pixel color transform (3×3):** a small matrix product against `cv::transform`, where the hand-written version is 4.2× faster.
+
+Details are in [OpenCV Integration](#5-opencv-integration-cvgemm--2d-convolution-im2col--gemm).
 
 ## Key Results at a Glance
 
