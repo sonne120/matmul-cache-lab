@@ -1,15 +1,15 @@
 ## Fast Matrix Multiplication in C++20, Compared with OpenCV
 
-A C++20 study of dense matrix multiplication (`C = A × B`) built up step by step in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp), verified with `--verify`, and benchmarked against Apple Accelerate / CBLAS ([`src/accelerate-gemm.cpp`](./src/accelerate-gemm.cpp)) and OpenCV 4 ([`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp)).
+A C++20 study of dense matrix multiplication (`C = A × B`) built up step by step in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp), verified with `--verify`, and benchmarked against Apple Accelerate / CBLAS [`accelerate-gemm.cpp` and OpenCV 4 ([`src/opencv-gemm.cpp`](opencv-gemm.cpp)).
 
 ## 1. Matrix Multiplication Progression
 
-Everything in this section is custom code: steps 1–6 are written by hand in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) and call no library. OpenCV is not used here at all; it appears only in [section 2](#2-opencv-comparison). The one library result in the table below is `accelerate_dgemm`, which is Apple Accelerate, not OpenCV.
+Steps 1–6 are hand-written in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) and call no library. The only library result in this section is `accelerate_dgemm` (Apple Accelerate), included as a baseline. OpenCV is covered separately in [section 2](#2-opencv-comparison).
 
 | Code | Where | Used in |
 | :--- | :--- | :--- |
-| **Custom** (hand-written C++ and NEON) | [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) | Sections 1 and 2 |
-| **Apple Accelerate** (`cblas_dgemm`) | [`src/accelerate-gemm.cpp`](./src/accelerate-gemm.cpp) | Sections 1 and 2, as the vendor baseline |
+| **Custom** (hand-written C++ and NEON) | [`matrix-multiply.cpp`](./src/matrix-multiply.cpp) | Sections 1 and 2 |
+| **Apple Accelerate** (`cblas_dgemm`) | [`accelerate-gemm.cpp`](./src/accelerate-gemm.cpp) | Sections 1 and 2, as the vendor baseline |
 | **OpenCV 4** (`cv::gemm`, `cv::filter2D`, `cv::transform`, …) | [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp) | Section 2 only (`matmul-opencv` target) |
 
 1. **Naive (`bad_matrix_multiply`):** `i-j-k` dot products on `double**`; `B` is read with column stride. *Custom.*
