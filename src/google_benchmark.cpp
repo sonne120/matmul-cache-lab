@@ -161,7 +161,6 @@ namespace
                 B[i * n + j] = in.B.data()[i][j];
             }
 
-        // Every function overwrites C, so stale values must not survive a call.
         std::fill(C.begin(), C.end(), NAN);
 
         for (auto _ : state)
