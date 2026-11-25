@@ -55,13 +55,23 @@ Key optimizations implemented in [`src/matrix-multiply.cpp`](./src/matrix-multip
 
 The optional `matmul-opencv` target ([`src/opencv_benchmark.cpp`](./src/opencv_benchmark.cpp), using wrappers in [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp)) benchmarks OpenCV 4 on `cv::Mat` across dense, rectangular, complex, Gram, and vision workloads, compared against the standalone C++/NEON kernels in [`src/google_benchmark.cpp`](./src/google_benchmark.cpp):
 
-| Workload | OpenCV (`matmul-opencv`) | Custom / BLAS (`matmul-bs64` / `cv::Mat`) | Notes |
-| :--- | :--- | :--- | :--- |
-| Dense GEMM (`1024×1024`, `CV_64F`) | `cv::gemm`: `10.7 ms` (`408.3 GFLOP/s`) | `neon_4x4_cv_mat_f64`: `76.3 ms` (`28.2 GFLOP/s`)<br>`accelerate_cv_mat_f64`: `3.33 ms` (`662.0 GFLOP/s`) | `cv::gemm` ~7.1× faster than NEON; Accelerate ~3.2× faster than `cv::gemm` |
-| 2D Convolution (`512×512`, 32× `5×5`, `CV_32F`) | `cv::filter2D`: `10.4 ms` (`40.5 GFLOP/s`) | `conv2d_im2col_neon`: `13.6 ms` (`30.8 GFLOP/s`)<br>`conv2d_im2col_ikj`: `31.9 ms` (`13.2 GFLOP/s`)<br>`bm_conv2d_naive`: `160 ms` (`2.63 GFLOP/s`) | `im2col + NEON` is ~11.8× faster than naive and within ~1.3× of `cv::filter2D` |
-| 3×3 Color Transform (`1024×1024`, `CV_32FC3`) | `cv::transform`: `1.30 ms` (`14.5 GFLOP/s`) | `bm_color_transform_gemm`: `0.325 ms` (`58.1 GFLOP/s`) | **4.0×** faster than OpenCV |
-| Rectangular GEMM (`1024×512 × 512×768`) | `opencv_gemm_f32`: `1.68 ms` (`884.3 GFLOP/s`)<br>`opencv_matmul_expr_f64`: `3.42 ms` (`428.4 GFLOP/s`)<br>`opencv_gemm_axpb_f64` (`B^T`): `3.63 ms` (`360.6 GFLOP/s`)<br>`opencv_gemm_complex_f64` (`CV_64FC2`): `14.1 ms` (`433.9 GFLOP/s`) | — | Rectangular `M×K × K×N`, transposed, scaled, and complex OpenCV GEMM variants |
-| Gram & Fixed-Size (`2048×1024`, `2×3 × 3×4`) | `opencv_mul_transposed_f64` (`A^T A`): `20.4 ms` (`277.2 GFLOP/s`)<br>`opencv_matx_mul_2x3_3x4`: `0.898 ns` | — | Symmetric Gram matrix (`cv::mulTransposed`) & stack-allocated `cv::Matx` |
+| Workload | Variant | Size / Type | Time | GFLOP/s | Notes |
+| :--- | :--- | :--- | ---: | ---: | :--- |
+| Dense GEMM | `accelerate_cv_mat_f64` | `1024×1024`, `CV_64F` | **3.33 ms** | **662.0** | Apple Accelerate (~3.2× faster than `cv::gemm`) |
+| Dense GEMM | `cv::gemm` | `1024×1024`, `CV_64F` | 10.7 ms | 408.3 | OpenCV baseline (~7.1× faster than NEON) |
+| Dense GEMM | `neon_4x4_cv_mat_f64` | `1024×1024`, `CV_64F` | 76.3 ms | 28.2 | Hand-written NEON 4×4 on `cv::Mat` |
+| 2D Conv (32× `5×5`) | `cv::filter2D` | `512×512`, `CV_32F` | **10.4 ms** | **40.5** | OpenCV baseline |
+| 2D Conv (32× `5×5`) | `conv2d_im2col_neon` | `512×512`, `CV_32F` | 13.6 ms | 30.8 | `im2col` + NEON `f32` (~11.8× faster than naive) |
+| 2D Conv (32× `5×5`) | `conv2d_im2col_ikj` | `512×512`, `CV_32F` | 31.9 ms | 13.2 | `im2col` + scalar `i-k-j` `f32` |
+| 2D Conv (32× `5×5`) | `bm_conv2d_naive` | `512×512`, `CV_32F` | 160 ms | 2.63 | 4-loop scalar baseline |
+| 3×3 Color Transform | `bm_color_transform_gemm` | `1024×1024`, `CV_32FC3` | **0.325 ms** | **58.1** | **4.0×** faster than `cv::transform` |
+| 3×3 Color Transform | `cv::transform` | `1024×1024`, `CV_32FC3` | 1.30 ms | 14.5 | OpenCV baseline |
+| Rectangular GEMM | `opencv_gemm_f32` | `1024×512 × 512×768`, `CV_32F` | 1.68 ms | 884.3 | `cv::gemm` single-precision |
+| Rectangular GEMM | `opencv_matmul_expr_f64` | `1024×512 × 512×768`, `CV_64F` | 3.42 ms | 428.4 | `cv::MatExpr` (`A * B`) |
+| Rectangular GEMM | `opencv_gemm_axpb_f64` | `1024×512 × 512×768`, `CV_64F` | 3.63 ms | 360.6 | `1.5 * A * B^T + 0.5 * D` (`GEMM_2_T`) |
+| Complex GEMM | `opencv_gemm_complex_f64` | `1024×512 × 512×768`, `CV_64FC2` | 14.1 ms | 433.9 | 2-channel complex `cv::gemm` |
+| Gram Matrix | `opencv_mul_transposed_f64` | `2048×1024`, `CV_64F` | 20.4 ms | 277.2 | `A^T * A` via `cv::mulTransposed` |
+| Fixed-Size `Matx` | `opencv_matx_mul_2x3_3x4` | `2×3 × 3×4`, `float` | 0.898 ns | — | Stack-allocated `cv::Matx` |
 
 ---
 
