@@ -39,15 +39,26 @@ set(run_all_commands "")
 set(verify_all_commands "")
 set(run_all_targets "")
 
+if(NOT APPLE)
+    find_path(CBLAS_INCLUDE_DIR NAMES cblas.h openblas/cblas.h)
+    find_package(BLAS QUIET)
+endif()
+
 foreach(bs IN LISTS BLOCK_SIZES)
     add_executable(matmul-bs${bs}
-        src/main.cpp src/verify.cpp src/matrix-multiply.cpp src/benchmark.cpp)
+        src/main.cpp src/verify.cpp src/matrix-multiply.cpp src/accelerate-gemm.cpp src/google_benchmark.cpp)
     target_compile_definitions(matmul-bs${bs} PRIVATE BS=${bs})
-    target_compile_options(matmul-bs${bs} PRIVATE -O3 -Wall -Wextra)
+    target_compile_options(matmul-bs${bs} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/O2;/W4>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3;-Wall;-Wextra>)
     target_link_libraries(matmul-bs${bs} PRIVATE benchmark::benchmark)
-    if(APPLE)
+    if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_definitions(matmul-bs${bs} PRIVATE ACCELERATE_NEW_LAPACK)
         target_link_libraries(matmul-bs${bs} PRIVATE "-framework Accelerate")
+    elseif(CBLAS_INCLUDE_DIR AND BLAS_FOUND)
+        target_compile_definitions(matmul-bs${bs} PRIVATE MATMUL_HAVE_CBLAS=1)
+        target_include_directories(matmul-bs${bs} PRIVATE ${CBLAS_INCLUDE_DIR})
+        target_link_libraries(matmul-bs${bs} PRIVATE ${BLAS_LIBRARIES})
     endif()
 
     add_custom_target(run-bs${bs}
@@ -71,13 +82,19 @@ add_custom_target(verify-all
 find_package(OpenCV QUIET)
 if(OpenCV_FOUND)
     message(STATUS "OpenCV ${OpenCV_VERSION} found: enabling matmul-opencv target")
-    add_executable(matmul-opencv src/opencv_benchmark.cpp src/matrix-multiply.cpp)
-    target_compile_definitions(matmul-opencv PRIVATE BS=64)
-    target_compile_options(matmul-opencv PRIVATE -O3 -Wall -Wextra)
+    add_executable(matmul-opencv src/opencv_benchmark.cpp src/matrix-multiply.cpp src/accelerate-gemm.cpp src/opencv-gemm.cpp)
+    target_compile_definitions(matmul-opencv PRIVATE BS=64 MATMUL_HAVE_OPENCV=1)
+    target_compile_options(matmul-opencv PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/O2;/W4>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O3;-Wall;-Wextra>)
     target_link_libraries(matmul-opencv PRIVATE benchmark::benchmark ${OpenCV_LIBS})
-    if(APPLE)
+    if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_definitions(matmul-opencv PRIVATE ACCELERATE_NEW_LAPACK)
         target_link_libraries(matmul-opencv PRIVATE "-framework Accelerate")
+    elseif(CBLAS_INCLUDE_DIR AND BLAS_FOUND)
+        target_compile_definitions(matmul-opencv PRIVATE MATMUL_HAVE_CBLAS=1)
+        target_include_directories(matmul-opencv PRIVATE ${CBLAS_INCLUDE_DIR})
+        target_link_libraries(matmul-opencv PRIVATE ${BLAS_LIBRARIES})
     endif()
 
     add_custom_target(run-opencv

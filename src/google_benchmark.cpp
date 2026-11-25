@@ -349,7 +349,7 @@ namespace
             ->Apply(configure);
 #endif
 
-#if defined(MATMUL_HAVE_ACCELERATE)
+#if defined(MATMUL_HAVE_ACCELERATE) || defined(MATMUL_HAVE_CBLAS)
     [[maybe_unused]] const auto *accelerate_dgemm =
         benchmark::RegisterBenchmark(
             "accelerate_dgemm",
@@ -360,4 +360,137 @@ namespace
             })
             ->Apply(configure);
 #endif
+
+    // Non-OpenCV float32 convolution & color-transform benchmarks (moved from opencv_benchmark.cpp)
+    constexpr int kConvKernel = 5;
+    constexpr int kNumFilters = 32;
+
+    std::vector<float> make_test_image_f32(int H, int W)
+    {
+        std::vector<float> img(static_cast<std::size_t>(H) * W);
+        std::srand(42);
+        for (float &v : img)
+            v = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+        return img;
+    }
+
+    std::vector<float> make_filter_bank_f32(int K, int num_filters)
+    {
+        std::vector<float> weights(static_cast<std::size_t>(K) * K * num_filters);
+        std::srand(123);
+        for (int f = 0; f < num_filters; ++f)
+        {
+            float sum = 0.0f;
+            for (int i = 0; i < K * K; ++i)
+            {
+                const float v = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+                weights[static_cast<std::size_t>(i) * num_filters + f] = v;
+                sum += v;
+            }
+            for (int i = 0; i < K * K; ++i)
+                weights[static_cast<std::size_t>(i) * num_filters + f] /= sum;
+        }
+        return weights;
+    }
+
+    void bm_conv2d_naive(benchmark::State &state)
+    {
+        const int H = static_cast<int>(state.range(0));
+        const int W = H;
+        const auto src = make_test_image_f32(H, W);
+        const auto weights = make_filter_bank_f32(kConvKernel, kNumFilters);
+        std::vector<float> kernel(kConvKernel * kConvKernel);
+        std::vector<float> dst(static_cast<std::size_t>(H) * W);
+
+        for (auto _ : state)
+        {
+            for (int f = 0; f < kNumFilters; ++f)
+            {
+                for (int i = 0; i < kConvKernel * kConvKernel; ++i)
+                    kernel[i] = weights[static_cast<std::size_t>(i) * kNumFilters + f];
+                conv2d_naive_f32(src.data(), H, W, kernel.data(), kConvKernel, dst.data());
+            }
+            benchmark::DoNotOptimize(dst.data());
+        }
+        const double flops = 2.0 * H * W * kConvKernel * kConvKernel * kNumFilters;
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    template <void (*GemmFn)(float *, const float *, const float *, int, int, int)>
+    void bm_conv2d_im2col(benchmark::State &state)
+    {
+        const int H = static_cast<int>(state.range(0));
+        const int W = H;
+        const int M = H * W;
+        const int K = kConvKernel * kConvKernel;
+        const int N = kNumFilters;
+
+        const auto src = make_test_image_f32(H, W);
+        const auto weights = make_filter_bank_f32(kConvKernel, kNumFilters);
+        std::vector<float> col(static_cast<std::size_t>(M) * K);
+        std::vector<float> out(static_cast<std::size_t>(M) * N);
+
+        for (auto _ : state)
+        {
+            im2col_f32(src.data(), H, W, kConvKernel, col.data());
+            GemmFn(out.data(), col.data(), weights.data(), M, N, K);
+            benchmark::DoNotOptimize(out.data());
+        }
+        const double flops = 2.0 * M * K * N;
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_color_transform_gemm(benchmark::State &state)
+    {
+        const int H = static_cast<int>(state.range(0));
+        const int W = H;
+        std::vector<float> src(static_cast<std::size_t>(H) * W * 3);
+        std::vector<float> dst(static_cast<std::size_t>(H) * W * 3);
+        std::srand(42);
+        for (float &v : src)
+            v = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+
+        const float M[9] = {0.393f, 0.769f, 0.189f, 0.349f, 0.686f, 0.168f, 0.272f, 0.534f, 0.131f};
+
+        for (auto _ : state)
+        {
+            color_transform_gemm_f32(src.data(), H, W, M, dst.data());
+            benchmark::DoNotOptimize(dst.data());
+        }
+        const double flops = 2.0 * H * W * 3 * 3;
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void configure_conv(benchmark::Benchmark *b)
+    {
+        b->Arg(256)
+            ->Arg(512)
+            ->Unit(benchmark::kMillisecond)
+            ->Repetitions(5)
+            ->ReportAggregatesOnly(true);
+    }
+
+    void configure_color(benchmark::Benchmark *b)
+    {
+        b->Arg(256)
+            ->Arg(512)
+            ->Arg(1024)
+            ->Unit(benchmark::kMillisecond)
+            ->Repetitions(5)
+            ->ReportAggregatesOnly(true);
+    }
+
+    BENCHMARK(bm_conv2d_naive)->Apply(configure_conv);
+    BENCHMARK_TEMPLATE(bm_conv2d_im2col, gemm_ikj)
+        ->Name("conv2d_im2col_ikj")
+        ->Apply(configure_conv);
+#if defined(MATMUL_HAVE_NEON)
+    BENCHMARK_TEMPLATE(bm_conv2d_im2col, gemm_neon_4x4)
+        ->Name("conv2d_im2col_neon")
+        ->Apply(configure_conv);
+#endif
+    BENCHMARK(bm_color_transform_gemm)->Apply(configure_color);
 }

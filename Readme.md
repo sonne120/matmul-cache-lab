@@ -1,231 +1,98 @@
 ## Fast Matrix Multiplication in C++20, Compared with OpenCV
 
-A study of dense double-precision matrix multiplication (`C = A × B`) on Apple Silicon, written in C++20 with Google Benchmark. It starts from a naive `i-j-k` triple loop and works through loop interchange, cache blocking, flat row-major storage, `k`-loop unrolling, and a hand-written ARM64 NEON 4×4 micro-kernel with a packed `B` panel, then measures each step against Apple Accelerate (`cblas_dgemm`). A built-in `--verify` mode checks every kernel against a plain reference.
+A C++20 study of dense matrix multiplication (`C = A × B`). A hand-written multiply is built up step by step in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp), from a naive triple loop to an ARM64 NEON kernel, and every step is measured against Apple Accelerate (`cblas_dgemm`) and OpenCV 4 (`cv::Mat`). 
 
-The same kernels are also compared with the OpenCV library on `cv::Mat` data, in an optional target that is built when OpenCV 4 is installed. Three workloads are measured, each implemented both ways:
+### How the custom multiply is implemented
 
-- **Dense matrix product:** the NEON kernel against `cv::gemm`, which is about 8× faster at `N = 1024`.
-- **2D convolution (32 filters, 5×5):** `im2col` followed by the NEON kernel against `cv::filter2D`, which run at the same speed.
-- **Per-pixel color transform (3×3):** a small matrix product against `cv::transform`, where the hand-written version is 4.2× faster.
+Each step is a separate single-threaded function, so every stage can be benchmarked on its own.
 
-Details are in [OpenCV Integration](#5-opencv-integration-cvgemm--2d-convolution-im2col--gemm).
+1. **Naive baseline (`bad_matrix_multiply`).** Loops in `i-j-k` order and computes each `C[i][j]` as a dot product. `A` is read along a row, but `B` is read down a column, so every step of the inner loop lands on a different row of `B`.
+2. **Loop interchange (`fast_matrix_multiply`).** The same arithmetic in `i-k-j` order. `A[i][k]` is held in a local variable, and the inner loop walks one row of `B` and one row of `C` from left to right.
+3. **Cache blocking (`matmul_tiled`, `matmul_tiled_flat`, `blocked_matrix_multiply`).** Three outer loops step over `BS × BS` tiles, and the `i-k-j` loops run inside one tile at a time. The variants differ in the order of the outer loops and in storage: the matrices move from an array of row pointers (`double**`) to one flat row-major array (`double*`) indexed as `i * N + j`. The tile size is the compile-time constant `BS`, and CMake builds one executable per value (16 to 512).
+4. **`k`-loop unrolling (`ikj_k4_matrix_multiply`, `blocked_k4_*`, `blocked_matrix_multiply_k8`).** The `k` loop advances four (or eight) steps at a time: four (or eight) values from a row of `A` and four (or eight) rows of `B` are combined in a single inner pass, so each `C[i][j]` is loaded and stored once per four (or eight) multiply-adds. A scalar loop finishes the remaining 0–3 (or 0–7) values of `k`.
+5. **NEON 4×4 micro-kernel (`neon_4x4_matrix_multiply`).** Works tile by tile in `jj-kk` order.
+   - **Packing:** the current tile of `B` is copied into a contiguous buffer, one 4-column strip at a time, so the kernel reads it with unit stride regardless of `N`.
+   - **Micro-kernel:** a 4×4 block of `C` is held in eight NEON registers (two `double`s each). For every `k`, one packed row of `B` is folded into the block with eight fused multiply-adds (`vfmaq_n_f64`), and the block is stored back once at the end.
+   - **Edges:** rows and columns left over when a size is not a multiple of 4 are handled by scalar clean-up loops.
 
-## Key Results at a Glance
+The same file also holds the rectangular and vision helper kernels (`gemm_ikj` for `double` and `float`, `gemm_neon_4x4` for `float`, `conv2d_naive_f32`, `im2col_f32`, `color_transform_gemm_f32`) and `gemm_sub_tiled`, an in-place LU trailing update (`A22 -= L21 × U12`).
 
-Median execution time and throughput (`1 FMA = 2 FLOPs`, so `GFLOP/s = 2·N³ / t`) on **Apple M2 Pro** (single-threaded, `-O3`):
+Every kernel is verified against the reference implementation (`--verify`).
 
-| Variant                   | Technique                             |        N = 1024 Time | N = 1024 GFLOP/s |        N = 2048 Time | N = 2048 GFLOP/s | Speedup vs `naive_ijk` (N = 1024) |
-| :------------------------ | :------------------------------------ | -------------------: | ---------------: | -------------------: | ---------------: | --------------------------------: |
-| `naive_ijk`               | `i-j-k`, `double**`                   |              1218 ms |             1.76 |           28,399 ms* |            0.60* |                              1.0× |
-| `tiled_bs64`              | `ii-kk-jj`, `double**`                |               228 ms |             9.42 |                    — |                — |                              5.3× |
-| `blocked_bs64`            | `si-sk-sj`, flat `double*`            |               222 ms |             9.67 |                    — |                — |                              5.5× |
-| `fast_ikj`                | `i-k-j`, `double**`                   |               158 ms |             13.6 |              1316 ms |             13.1 |                              7.7× |
-| `blocked_k4_ikj_bs64`     | `ii-kk-jj` + `k×4` unroll             |               146 ms |             14.7 |              1319 ms |             13.0 |                              8.3× |
-| `ikj_k4`                  | `i-k-j` + `k×4` unroll (no blocks)    |               127 ms |             16.9 |              1377 ms |             12.5 |                              9.6× |
-| `neon_4x4_bs64`           | 4×4 NEON FMA + packed B               |          **73.9 ms** |         **29.1** |           **702 ms** |         **25.1** |                         **16.5×** |
-| `neon_4x4_bs16` / `bs256` | Best `neon_4x4` per size              | **64.9 ms** (`bs16`) |         **33.1** | **645 ms** (`bs256`) |         **26.6** |                         **18.8×** |
-| `accelerate_dgemm`        | Apple Accelerate (`VECLIB_THREADS=1`) |          **6.35 ms** |        **339.5** |          **56.1 ms** |        **307.1** |                        **191.8×** |
+The custom kernels are also compared with the OpenCV library (`cv::Mat` data) in the optional `matmul-opencv` target ([`src/opencv_benchmark.cpp`](./src/opencv_benchmark.cpp), using wrappers in [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp)) alongside the standalone C++/NEON convolution and color-transform benchmarks in [`src/google_benchmark.cpp`](./src/google_benchmark.cpp):
 
-*\*`naive_ijk` at N = 2048 was measured in an earlier `-O2` run; not re-run in the `-O3` suite.*
-
-### Core Findings
-
-- *Loop interchange (`i-j-k` → `i-k-j`)** yields a **6.2–7.8×** speedup up to `N = 1024` by turning column-strided reads of `B` into sequential row streams.
-- *Cache blocking alone does not beat `fast_ikj`:** every plain blocked variant (`tiled`, `blocked`, `tiled_flat`, `tiled_flat_v2`) is slower than plain `i-k-j` whenever `BS < N`.
-- *Unrolling `k` by 4 (`ikj_k4`)** cuts `C` load/store traffic by 4× and improves speed by **15–25%** up to `N = 1024` without any blocking.
-- *Blocking + `k`-unrolling (`blocked_k4_ikj`)** reaches **2×** speedup over `fast_ikj` on non-power-of-two sizes (`N = 500, 1000, 2000`), but suffers severe **cache-set conflict penalties** at power-of-two sizes (`N = 1024, 2048`) when `BS ≤ 64`.
-- *A 4×4 ARM64 NEON micro-kernel with packed `B` (`neon_4x4`)** delivers a consistent **~2×** speedup over `fast_ikj` across all tested sizes and eliminates power-of-two sensitivity for `BS ≥ 32`.
-- *Apple Accelerate (`cblas_dgemm`)** is another **10–12×** faster than `neon_4x4` (~340 GFLOP/s single-threaded), likely leveraging Apple Silicon matrix coprocessor (AMX) hardware.
-
-![DGEMM Throughput Scaling](./docs/images/gflops_scaling.svg)
-
-![Speedup vs Naive i-j-k](./docs/images/speedup_comparison.svg)
-
----
-
-## Test Environment & Methodology
-
-- *CPU:** Apple M2 Pro (12 cores; L1 Data: 64 KiB, L1 Instruction: 128 KiB, L2 Unified: 4 MiB)
-- *Compiler & Flags:** C++20, `-O3 -Wall -Wextra` (`RelWithDebInfo`)
-- *Benchmarking:** Google Benchmark v1.9.5, 5 repetitions per configuration (`median` reported), `caffeinate -i` and `VECLIB_MAXIMUM_THREADS=1`
-- *Verification:** Every kernel is checked against `bad_matrix_multiply` before and after benchmarking, plus standalone `--verify` mode (`216/216` checks pass across all 6 block sizes)
+- **Dense matrix product:** the NEON kernel against `cv::gemm`, which is ~7.1× faster at `N = 1024` (and `cblas_dgemm` is ~3.2× faster than `cv::gemm`).
+- **2D convolution (32 filters, 5×5):** `im2col` followed by the NEON `f32` kernel (`13.6 ms`) against `cv::filter2D` (`10.4 ms`) at `512×512`.
+- **Per-pixel color transform (3×3):** a small matrix product against `cv::transform`, where the hand-written version is **4.0× faster** (`0.325 ms` vs `1.30 ms` at `1024×1024`).
+- **Additional OpenCV matrix variants:** rectangular `CV_32F`/`CV_64F` `cv::gemm` (including `alpha`/`beta` scaling and `GEMM_2_T`), `CV_64FC2` complex GEMM, `cv::MatExpr` (`A * B`), Gram matrix (`cv::mulTransposed`), and stack-allocated `cv::Matx`.
 
 
-## Implemented Variants
 
-| Benchmark Name       | Function                           | Storage        | Outer Block Order   | Inner Strategy                        |
-| :------------------- | :--------------------------------- | :------------- | :------------------ | :------------------------------------ |
-| `naive_ijk`          | `bad_matrix_multiply`              | `double**`     | none (`i-j-k`)      | Scalar dot product                    |
-| `fast_ikj`           | `fast_matrix_multiply`             | `double**`     | none (`i-k-j`)      | Sequential row streaming              |
-| `tiled_bs*`          | `matmul_tiled`                     | `double**`     | `ii-kk-jj`          | `i-k-j` inside `BS×BS×BS`             |
-| `tiled_flat_bs*`     | `matmul_tiled_flat`                | flat `double*` | `ii-kk-jj`          | `i-k-j` (runtime `BS`)                |
-| `tiled_flat_v2_bs*`  | `matmul_tiled_flat_v2`             | flat `double*` | `ii-jj-kk`          | `i-k-j`                               |
-| `blocked_bs*`        | `blocked_matrix_multiply`          | flat `double*` | `si-sk-sj`          | `i-k-j` (compile-time `BS`)           |
-| `ikj_k4`             | `ikj_k4_matrix_multiply`           | flat `double*` | none (`i-k-j`)      | 4 rows of `B` per pass                |
-| `blocked_k4_bs*`     | `blocked_k4_matrix_multiply`       | flat `double*` | `sj-si-sk`          | 4 rows of `B` per pass                |
-| `blocked_k4_ikj_bs*` | `blocked_k4_ikj_matrix_multiply`   | flat `double*` | `ii-kk-jj`          | 4 rows of `B` per pass                |
-| `blocked_k8_bs*`     | `blocked_matrix_multiply_k8`       | flat `double*` | `si-sj-sk`          | 8 rows of `B` per pass                |
-| `neon_4x4_bs*`       | `neon_4x4_matrix_multiply`         | flat `double*` | `jj-kk`, packed `B` | 4×4 NEON FMA micro-kernel             |
-| `accelerate_dgemm`   | `accelerate_dgemm_matrix_multiply` | flat `double*` | Apple Accelerate    | `cblas_dgemm`                         |
-| `gemm_sub_tiled_bs*` | `gemm_sub_tiled`                   | flat `double*` | `ii-pp-jj`          | LU trailing update (`A22 -= L21×U12`) |
+## 1. Matrix Multiplication Progression
+
+Key optimizations implemented in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp):
+
+- **Loop interchange (`i-j-k` → `i-k-j`):** turns column-strided reads of `B` into sequential row streams (**7.7×** faster at `N = 1024`).
+- **Flat row-major storage (`double*`) & cache blocking:** removes pointer-of-pointers indirection and tiles loops (`BS = 64`) to fit working sets in cache.
+- **`k`-loop unrolling (`k × 4`):** reduces `C` load/store traffic by 4×.
+- **ARM64 NEON 4×4 micro-kernel (`neon_4x4`):** packs `B` tiles contiguously and accumulates a 4×4 register tile using NEON FMA instructions (**16.5×–18.8×** over naive).
+- **Apple Accelerate / CBLAS (`cblas_dgemm`):** vendor BLAS baseline in [`src/accelerate-gemm.cpp`](./src/accelerate-gemm.cpp) (`VECLIB_MAXIMUM_THREADS=1` on macOS, or OpenBLAS/CBLAS on Linux/Windows).
+
+| Variant            | Technique                             |        N = 1024 Time | N = 1024 GFLOP/s |        N = 2048 Time | N = 2048 GFLOP/s | Speedup vs `naive_ijk` (N = 1024) |
+| :----------------- | :------------------------------------ | -------------------: | ---------------: | -------------------: | ---------------: | --------------------------------: |
+| `naive_ijk`        | `i-j-k`, `double**`                   |              1218 ms |             1.76 |           28,399 ms* |            0.60* |                              1.0× |
+| `blocked_bs64`     | `si-sk-sj`, flat `double*`            |               222 ms |             9.67 |                    — |                — |                              5.5× |
+| `fast_ikj`         | `i-k-j`, `double**`                   |               158 ms |             13.6 |              1316 ms |             13.1 |                              7.7× |
+| `ikj_k4`           | `i-k-j` + `k×4` unroll                |               127 ms |             16.9 |              1377 ms |             12.5 |                              9.6× |
+| `neon_4x4_bs64`    | 4×4 NEON FMA + packed `B`             |          **73.9 ms** |         **29.1** |           **702 ms** |         **25.1** |                         **16.5×** |
+| `accelerate_dgemm` | Apple Accelerate (`VECLIB_THREADS=1`) |          **6.35 ms** |        **339.5** |          **56.1 ms** |        **307.1** |                        **191.8×** |
+
+*\*`naive_ijk` at N = 2048 was measured in an earlier `-O2` run.*
 
 ---
 
-## Detailed Experiments
+## 2. OpenCV Comparison
 
-### 1. Loop Interchange (`i-j-k` vs `i-k-j`)
+The optional `matmul-opencv` target ([`src/opencv_benchmark.cpp`](./src/opencv_benchmark.cpp), using wrappers in [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp)) benchmarks OpenCV 4 on `cv::Mat` across dense, rectangular, complex, Gram, and vision workloads, compared against the standalone C++/NEON kernels in [`src/google_benchmark.cpp`](./src/google_benchmark.cpp):
 
-| Metric                |  N = 256 |  N = 500 |  N = 512 | N = 1000 | N = 1024 |
-| :-------------------- | -------: | -------: | -------: | -------: | -------: |
-| `naive_ijk` (ms)      |     15.4 |      133 |      144 |     1137 |     1218 |
-| `fast_ikj` (ms)       |     2.48 |     18.2 |     19.4 |      147 |      157 |
-| **Speedup**           | **6.2×** | **7.3×** | **7.4×** | **7.7×** | **7.8×** |
-| `naive_ijk` (ns / N³) |    0.918 |    1.064 |    1.073 |    1.137 |    1.134 |
-| `fast_ikj` (ns / N³)  |    0.148 |    0.146 |    0.145 |    0.147 |    0.146 |
-
-Plain `i-k-j` maintains a constant ~0.147 ns per multiply-add all the way to `N = 2048` (0.148 ns), even when `B` reaches 32 MiB and exceeds L2 cache, because sequential row streams are handled effectively by the hardware prefetcher.
+| Workload | OpenCV (`matmul-opencv`) | Custom / BLAS (`matmul-bs64` / `cv::Mat`) | Notes |
+| :--- | :--- | :--- | :--- |
+| Dense GEMM (`1024×1024`, `CV_64F`) | `cv::gemm`: `10.7 ms` (`408.3 GFLOP/s`) | `neon_4x4_cv_mat_f64`: `76.3 ms` (`28.2 GFLOP/s`)<br>`accelerate_cv_mat_f64`: `3.33 ms` (`662.0 GFLOP/s`) | `cv::gemm` ~7.1× faster than NEON; Accelerate ~3.2× faster than `cv::gemm` |
+| 2D Convolution (`512×512`, 32× `5×5`, `CV_32F`) | `cv::filter2D`: `10.4 ms` (`40.5 GFLOP/s`) | `conv2d_im2col_neon`: `13.6 ms` (`30.8 GFLOP/s`)<br>`conv2d_im2col_ikj`: `31.9 ms` (`13.2 GFLOP/s`)<br>`bm_conv2d_naive`: `160 ms` (`2.63 GFLOP/s`) | `im2col + NEON` is ~11.8× faster than naive and within ~1.3× of `cv::filter2D` |
+| 3×3 Color Transform (`1024×1024`, `CV_32FC3`) | `cv::transform`: `1.30 ms` (`14.5 GFLOP/s`) | `bm_color_transform_gemm`: `0.325 ms` (`58.1 GFLOP/s`) | **4.0×** faster than OpenCV |
+| Rectangular GEMM (`1024×512 × 512×768`) | `opencv_gemm_f32`: `1.68 ms` (`884.3 GFLOP/s`)<br>`opencv_matmul_expr_f64`: `3.42 ms` (`428.4 GFLOP/s`)<br>`opencv_gemm_axpb_f64` (`B^T`): `3.63 ms` (`360.6 GFLOP/s`)<br>`opencv_gemm_complex_f64` (`CV_64FC2`): `14.1 ms` (`433.9 GFLOP/s`) | — | Rectangular `M×K × K×N`, transposed, scaled, and complex OpenCV GEMM variants |
+| Gram & Fixed-Size (`2048×1024`, `2×3 × 3×4`) | `opencv_mul_transposed_f64` (`A^T A`): `20.4 ms` (`277.2 GFLOP/s`)<br>`opencv_matx_mul_2x3_3x4`: `0.898 ns` | — | Symmetric Gram matrix (`cv::mulTransposed`) & stack-allocated `cv::Matx` |
 
 ---
 
-### 2. Cache Blocking Alone & Storage Layout (`double**` vs Flat `double*`)
-
-Four single-row-of-`B` blocked variants at `N = 1024` (time in ms, vs `fast_ikj` = 157 ms):
-
-|  BS | `tiled` (`double**`) | `blocked` (flat) | `tiled_flat` | `tiled_flat_v2` | Slowdown vs `fast_ikj` |
-| --: | -------------------: | ---------------: | -----------: | --------------: | :--------------------- |
-|  16 |                  322 |              312 |          312 |             350 | 2.0–2.2×               |
-|  32 |                  292 |              270 |          270 |             268 | 1.7–1.9×               |
-|  64 |                  228 |              222 |          224 |             221 | 1.4–1.5×               |
-| 128 |                  206 |              204 |          205 |             209 | 1.3×                   |
-| 256 |                  201 |              197 |          202 |             204 | 1.3×                   |
-| 512 |                  187 |              186 |          184 |             189 | 1.2×                   |
-
-Flat row-major storage (`blocked`) beats pointer-of-pointers (`tiled`) in 17 of 18 `(BS, N)` combinations by up to 8%, removing one pointer indirection per row. However, **no plain blocked variant beats `fast_ikj` when `BS < N`**, because `fast_ikj` is already compute/stream-balanced and blocking shortens the inner sequential memory streams without reducing `C` load/store traffic.
-
----
-
-### 3. `k`-Unrolling, Power-of-Two Conflicts, and ARM64 NEON (`neon_4x4`)
-
-Median times in ms (percentages relative to `fast_ikj` at the same `N`):
-
-| Variant                    |     N = 256 |     N = 512 |    N = 1024 |    N = 2000 |    N = 2048 |
-| :------------------------- | ----------: | ----------: | ----------: | ----------: | ----------: |
-| `fast_ikj`                 |   2.44–2.54 |   19.3–19.9 |     156–167 |   1167–1233 |   1251–1316 |
-| `ikj_k4` (no blocks)       | 1.95 (−21%) | 16.5 (−15%) |  125 (−20%) |  1260 (+5%) | 1393 (+10%) |
-| `blocked_k4_ikj`, BS = 16  | 1.73 (−30%) | 15.1 (−22%) |   167 (+6%) |  839 (−30%) | 1781 (+40%) |
-| `blocked_k4_ikj`, BS = 32  | 1.33 (−46%) | 16.7 (−14%) |   166 (+6%) |  608 (−49%) | 1466 (+15%) |
-| `blocked_k4_ikj`, BS = 64  | 1.53 (−38%) |  17.9 (−8%) |   146 (−7%) |  595 (−50%) |  1319 (+4%) |
-| `blocked_k4_ikj`, BS = 128 | 2.14 (−14%) |  18.1 (−7%) |   152 (−3%) | 1065 (−11%) |   1271 (0%) |
-| `blocked_k4_ikj`, BS = 256 | 1.95 (−21%) | 16.7 (−14%) |  137 (−13%) | 1004 (−16%) |  1172 (−8%) |
-| `blocked_k4_ikj`, BS = 512 | 1.95 (−21%) | 16.5 (−15%) |  129 (−18%) |  947 (−21%) | 1088 (−14%) |
-| `neon_4x4`, BS = 16        | 0.99 (−60%) | 8.35 (−57%) | 64.9 (−59%) |  795 (−34%) |  1353 (+6%) |
-| `neon_4x4`, BS = 32        | 1.14 (−54%) | 8.92 (−54%) | 72.6 (−54%) |  722 (−40%) |  840 (−34%) |
-| `neon_4x4`, BS = 64        | 1.17 (−53%) | 9.33 (−52%) | 73.9 (−53%) |  618 (−49%) |  702 (−45%) |
-| `neon_4x4`, BS = 128       | 1.24 (−50%) | 9.88 (−49%) | 80.4 (−49%) |  603 (−50%) |  652 (−49%) |
-| `neon_4x4`, BS = 256       | 1.27 (−49%) | 10.0 (−48%) | 80.2 (−49%) |  599 (−50%) |  645 (−49%) |
-| `neon_4x4`, BS = 512       | 1.28 (−48%) | 10.1 (−48%) | 80.9 (−48%) |  603 (−50%) |  650 (−49%) |
-| `accelerate_dgemm`         |       0.094 |       0.773 |        6.35 |        49.0 |        56.1 |
-
-#### Power-of-Two Sensitivity Check
-
-Normalized cost per operation ratio (`time_ratio / N³_ratio`, where `1.00×` = identical cost per op):
-
-| Variant                   | N = 500 (ms) | N = 1000 (ms) | 512 vs 500 | 1024 vs 1000 | 2048 vs 2000 |
-| :------------------------ | -----------: | ------------: | ---------: | -----------: | -----------: |
-| `fast_ikj`                |    18.2–18.8 |       146–152 |      0.99× |        0.99× |        0.99× |
-| `ikj_k4`                  |  13.7 (−25%) |    111 (−24%) |      1.12× |        1.05× |        1.03× |
-| `blocked_k4_ikj`, BS = 32 |  9.34 (−49%) |   74.1 (−50%) |      1.67× |        2.09× |        2.25× |
-| `blocked_k4_ikj`, BS = 64 |  8.90 (−51%) |   70.1 (−52%) |      1.87× |        1.94× |        2.06× |
-| `neon_4x4`, BS = 64       |  8.50 (−53%) |   68.5 (−53%) |      1.02× |        1.00× |        1.06× |
-| `neon_4x4`, BS = 256      |  9.27 (−49%) |   74.3 (−49%) |      1.00× |        1.01× |        1.00× |
-| `accelerate_dgemm`        |        0.698 |          5.88 |      1.03× |        1.01× |        1.07× |
-
-- `blocked_k4_ikj` with `BS ≤ 64` slows down by **1.6–2.3× per operation** on power-of-two dimensions (`512, 1024, 2048`), consistent with L1 cache-set aliasing (at `N = 2048`, one row is `16 KiB`, matching one L1 cache way).
-- `neon_4x4` packs each `B` tile into a contiguous buffer, removing row-stride aliasing and keeping the power-of-two ratio at **1.00–1.08×** for `BS ≥ 32`.
-
----
-
-### 4. Other `k`-Unrolled & LU Trailing Update Variants (`N = 1024`, ms)
-
-|  BS | `blocked_k4` (`sj-si-sk`) | `blocked_k4_ikj` (`ii-kk-jj`) | `blocked_k8` (`si-sj-sk`) | `gemm_sub_tiled` |
-| --: | ------------------------: | ----------------------------: | ------------------------: | ---------------: |
-|  16 |                       185 |                           167 |                       213 |              337 |
-|  32 |                       168 |                           166 |                       176 |              249 |
-|  64 |                       151 |                           146 |                       153 |              201 |
-| 128 |                       150 |                           152 |                       142 |              199 |
-| 256 |                       137 |                           137 |                       132 |              196 |
-| 512 |                       130 |                           129 |                       133 |              190 |
-
-- Unrolling `k` by 8 (`blocked_k8`) does not improve on `k = 4` (within 7% for `BS ≥ 32`, 28% slower at `BS = 16`).
-- `gemm_sub_tiled` implements the in-place LU trailing update `A22 -= L21 × U12` (`N × N` sub-problem).
-
----
-
-### 5. OpenCV Integration: `cv::gemm` & 2D Convolution (`im2col + GEMM`)
-
-When OpenCV is available (`find_package(OpenCV QUIET)`), the optional `matmul-opencv` target bridges dense matrix multiplication to real computer-vision workloads on `cv::Mat`:
-
-1. **Dense `CV_64F` `cv::Mat` `GEMM` vs `cv::gemm`:**
-
-| Variant                 | N = 256 (ms / GFLOP/s) | N = 512 (ms / GFLOP/s) | N = 1024 (ms / GFLOP/s) |
-| :---------------------- | ---------------------: | ---------------------: | ----------------------: |
-| `neon_4x4_cv_mat_f64`   |         1.19 ms / 28.3 |         9.57 ms / 28.1 |          79.3 ms / 27.2 |
-| `cv::gemm` (`CV_64F`)   |       0.292 ms / 216.0 |        1.26 ms / 361.4 |         9.42 ms / 358.7 |
-| `accelerate_cv_mat_f64` |       0.092 ms / 363.6 |       0.764 ms / 351.5 |         6.58 ms / 327.5 |
-
-![Dense cv::Mat GEMM Comparison](./docs/images/opencv_cv_gemm.svg)
-
-2. **Multi-Filter 2D Convolution (`5×5` kernel, 32 filters, `CV_32F`) via `im2col + GEMM`:**
-   Each `5×5` image patch is unrolled into a `(H·W) × 25` matrix and multiplied by a `25 × 32` filter bank using rectangular `float32` `GEMM` (`M × K × N`), verified against `cv::filter2D` (`max_abs_diff < 1e-4`):
-
-| Implementation                    | 256×256 (ms / GFLOP/s) | 512×512 (ms / GFLOP/s) | Speedup vs Naive (512×512) |
-| :-------------------------------- | ---------------------: | ---------------------: | -------------------------: |
-| `conv2d_naive` (4-loop)           |         40.9 ms / 2.58 |          162 ms / 2.60 |                       1.0× |
-| `im2col + ikj_f32`                |         12.9 ms / 8.15 |         51.7 ms / 8.13 |                       3.1× |
-| `OpenCV cv::filter2D` (32 passes) |         2.76 ms / 38.1 |         10.6 ms / 39.5 |                      15.3× |
-| `im2col + NEON 4×4 f32`           |     **2.53 ms / 41.6** |     **10.3 ms / 40.7** |                  **15.7×** |
-
-![2D Convolution via im2col + GEMM vs OpenCV cv::filter2D](./docs/images/opencv_conv2d.svg)
-
-3. **Pixel Color Matrix Transform (`(H·W) × 3` multiplied by `3 × 3`, `CV_32FC3`) vs `cv::transform`:**
-   Applying a `3×3` sepia color matrix per pixel, verified against `cv::transform` (`max_abs_diff < 1e-4`):
-
-| Implementation             | 256×256 (ms / GFLOP/s) | 512×512 (ms / GFLOP/s) | 1024×1024 (ms / GFLOP/s) | Speedup vs `cv::transform` |
-| :------------------------- | ---------------------: | ---------------------: | -----------------------: | -------------------------: |
-| `OpenCV cv::transform`     |        0.078 ms / 15.1 |        0.312 ms / 15.2 |           1.31 ms / 14.4 |                       1.0× |
-| `color_transform_gemm_f32` |    **0.019 ms / 62.5** |    **0.077 ms / 61.0** |      **0.314 ms / 60.2** |                   **4.2×** |
-
----
-
-### Limitations & Notes
-
-- **Hardware counters:** L1/LL cache-miss and TLB-miss counters were not collected; the L1 set-aliasing explanation for power-of-two strides is inferred from the size pattern rather than directly measured.
-- **Accelerate baseline:** `accelerate_dgemm` achieves ~170B multiply-adds/s (~340 GFLOP/s) on a single thread (`VECLIB_MAXIMUM_THREADS=1`), which exceeds standard NEON throughput and likely reflects Apple AMX usage. With 8 threads (`VECLIB_MAXIMUM_THREADS=8`), it reaches 3.46 ms at `N = 1024` (another ~1.9× faster).
-- **Run-to-run variance:** Most benchmarks have `CV < 3%`, except `ikj_k4` (up to 15–20% in some runs), `neon_4x4_bs16` at `N = 2000` (12%), and `accelerate_dgemm` (4–7%). Small single-digit percentage differences should not be over-interpreted.
-- **Portability:** `neon_4x4` and `accelerate_dgemm` target Apple Silicon / ARM64; x86_64 builds require guarding or disabling those targets.
-
----
-
-### Build, Verify & Run
+## Build, Verify & Run
 
 ```sh
-# Configure and build all block-size executables (BS = 16, 32, 64, 128, 256, 512)
 cmake -S . -B build
 cmake --build build -j 8
 
-# Run correctness verification across all variants and block sizes (216 checks)
+# Verify correctness across all variants and block sizes
 cmake --build build --target verify-all
 
 # Run benchmarks
-cmake --build build --target run-bs64                          # BS = 64 only
-cmake --build build --target run-all                           # All block sizes
-cmake --build build --target run-bs64 -DFILTER="neon|accel"    # Filter by regex
-cmake --build build --target run-opencv                        # Optional OpenCV + im2col suite
-```
+cmake --build build --target run-bs64
+cmake --build build --target run-opencv
 
-Direct binary usage:
+# Build and run with Clang
+cmake -S . -B build-clang -DCMAKE_CXX_COMPILER=clang++
+cmake --build build-clang -j 8
+./build-clang/matmul-bs64 --verify
+./build-clang/matmul-bs64
 
-```sh
-./build/matmul-bs64 --verify
-./build/matmul-bs64 --benchmark_filter="fast_ikj|neon_4x4|accelerate_dgemm"
+# Build and run with GCC 
+cmake -S . -B build-gcc -DCMAKE_CXX_COMPILER=g++
+cmake --build build-gcc -j 8
+./build-gcc/matmul-bs64 --verify
+./build-gcc/matmul-bs64
+
+# Build and run on Windows
+cmake -S . -B build-win
+cmake --build build-win --config Release --target matmul-bs64 -j 8
+.\build-win\Release\matmul-bs64.exe --verify
+.\build-win\Release\matmul-bs64.exe
 ```

@@ -4,8 +4,8 @@ CLANG_TIDY ?= clang-tidy
 JOBS ?= 8
 
 SRCS := src/main.cpp src/verify.cpp src/verify.hpp src/matrix-multiply.cpp src/matrix-multiply.hpp \
-	src/benchmark.cpp src/opencv_benchmark.cpp
-TIDY_SRCS := src/main.cpp src/verify.cpp src/matrix-multiply.cpp src/benchmark.cpp
+	src/google_benchmark.cpp src/opencv_benchmark.cpp
+TIDY_SRCS := src/main.cpp src/verify.cpp src/matrix-multiply.cpp src/google_benchmark.cpp
 
 .PHONY: all asan tsan format format-check tidy clean
 

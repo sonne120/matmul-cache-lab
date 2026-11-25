@@ -116,7 +116,7 @@ namespace calculate_matrix
 #if defined(MATMUL_HAVE_NEON)
             run("neon_4x4_matrix_multiply", neon_4x4_matrix_multiply);
 #endif
-#if defined(MATMUL_HAVE_ACCELERATE)
+#if defined(MATMUL_HAVE_ACCELERATE) || defined(MATMUL_HAVE_CBLAS)
             run("accelerate_dgemm_matrix_multiply", accelerate_dgemm_matrix_multiply);
 #endif
             return failures;

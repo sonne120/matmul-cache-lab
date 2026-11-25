@@ -11,86 +11,7 @@ using namespace calculate_matrix;
 
 namespace
 {
-    void gemm_rect_ikj_f32(const float *A, const float *B, float *C, int M, int N, int K)
-    {
-        gemm_ikj(C, A, B, M, N, K);
-    }
-
-#if defined(MATMUL_HAVE_NEON)
-    void gemm_rect_neon_f32(const float *A, const float *B, float *C, int M, int N, int K)
-    {
-        gemm_neon_4x4(C, A, B, M, N, K);
-    }
-#endif
-
     // 2D Convolution / Correlation helpers on CV_32FC1
-
-    void conv2d_naive_f32(const cv::Mat &src, const cv::Mat &kernel, cv::Mat &dst)
-    {
-        const int H = src.rows;
-        const int W = src.cols;
-        const int K = kernel.rows;
-        const int pad = K / 2;
-
-        dst.create(H, W, CV_32FC1);
-        for (int y = 0; y < H; ++y)
-        {
-            float *dst_row = dst.ptr<float>(y);
-            for (int x = 0; x < W; ++x)
-            {
-                float sum = 0.0f;
-                for (int ky = 0; ky < K; ++ky)
-                {
-                    const int sy = y + ky - pad;
-                    if (sy < 0 || sy >= H)
-                        continue;
-                    const float *src_row = src.ptr<float>(sy);
-                    const float *ker_row = kernel.ptr<float>(ky);
-                    for (int kx = 0; kx < K; ++kx)
-                    {
-                        const int sx = x + kx - pad;
-                        if (sx >= 0 && sx < W)
-                            sum += src_row[sx] * ker_row[kx];
-                    }
-                }
-                dst_row[x] = sum;
-            }
-        }
-    }
-
-    void im2col_f32(const cv::Mat &src, int K, std::vector<float> &col)
-    {
-        const int H = src.rows;
-        const int W = src.cols;
-        const int pad = K / 2;
-        const int kk = K * K;
-
-        col.resize(static_cast<std::size_t>(H) * W * kk);
-        for (int y = 0; y < H; ++y)
-        {
-            for (int x = 0; x < W; ++x)
-            {
-                float *dst_patch = col.data() + (static_cast<std::size_t>(y) * W + x) * kk;
-                int idx = 0;
-                for (int ky = 0; ky < K; ++ky)
-                {
-                    const int sy = y + ky - pad;
-                    if (sy < 0 || sy >= H)
-                    {
-                        for (int kx = 0; kx < K; ++kx)
-                            dst_patch[idx++] = 0.0f;
-                        continue;
-                    }
-                    const float *src_row = src.ptr<float>(sy);
-                    for (int kx = 0; kx < K; ++kx)
-                    {
-                        const int sx = x + kx - pad;
-                        dst_patch[idx++] = (sx >= 0 && sx < W) ? src_row[sx] : 0.0f;
-                    }
-                }
-            }
-        }
-    }
 
     cv::Mat make_test_image_f32(int H, int W)
     {
@@ -136,7 +57,7 @@ namespace
 
         for (auto _ : state)
         {
-            cv::gemm(A, B, 1.0, cv::Mat(), 0.0, C);
+            opencv_gemm_f64(A, B, C);
             benchmark::DoNotOptimize(C.data);
         }
         state.counters["GFLOP/s"] =
@@ -172,7 +93,7 @@ namespace
     }
 #endif
 
-#if defined(MATMUL_HAVE_ACCELERATE)
+#if defined(MATMUL_HAVE_ACCELERATE) || defined(MATMUL_HAVE_CBLAS)
     void bm_accelerate_cv_mat_f64(benchmark::State &state)
     {
         const int n = static_cast<int>(state.range(0));
@@ -199,11 +120,7 @@ namespace
     }
 #endif
 
-    // Benchmarks: Multi-filter 2D Convolution (5x5, 32 filters)
-    //   1. Naive 4-loop convolution
-    //   2. OpenCV cv::filter2D (32 passes)
-    //   3. im2col + gemm_rect_ikj_f32
-    //   4. im2col + gemm_rect_neon_f32
+    // Benchmarks: Multi-filter 2D Convolution (5x5, 32 filters) via OpenCV cv::filter2D
 
     constexpr int kConvKernel = 5;
     constexpr int kNumFilters = 32;
@@ -236,92 +153,6 @@ namespace
             benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
     }
 
-    void bm_conv2d_naive(benchmark::State &state)
-    {
-        const int H = static_cast<int>(state.range(0));
-        const int W = H;
-        cv::Mat src = make_test_image_f32(H, W);
-        cv::Mat weights = make_filter_bank_f32(kConvKernel, kNumFilters);
-
-        cv::Mat kernel0(kConvKernel, kConvKernel, CV_32FC1);
-        for (int i = 0; i < kConvKernel * kConvKernel; ++i)
-            kernel0.at<float>(i / kConvKernel, i % kConvKernel) = weights.at<float>(i, 0);
-
-        cv::Mat ref, dst;
-        cv::filter2D(src, ref, CV_32F, kernel0, cv::Point(-1, -1), 0.0, cv::BORDER_CONSTANT);
-        conv2d_naive_f32(src, kernel0, dst);
-        if (cv::norm(dst, ref, cv::NORM_INF) > 1e-4)
-        {
-            state.SkipWithError("conv2d_naive differs from cv::filter2D");
-            return;
-        }
-
-        for (auto _ : state)
-        {
-            for (int f = 0; f < kNumFilters; ++f)
-            {
-                for (int i = 0; i < kConvKernel * kConvKernel; ++i)
-                    kernel0.at<float>(i / kConvKernel, i % kConvKernel) = weights.at<float>(i, f);
-                conv2d_naive_f32(src, kernel0, dst);
-            }
-            benchmark::DoNotOptimize(dst.data);
-        }
-        const double flops = 2.0 * H * W * kConvKernel * kConvKernel * kNumFilters;
-        state.counters["GFLOP/s"] =
-            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
-    }
-
-    template <void (*GemmFn)(const float *, const float *, float *, int, int, int)>
-    void bm_conv2d_im2col(benchmark::State &state)
-    {
-        const int H = static_cast<int>(state.range(0));
-        const int W = H;
-        const int M = H * W;
-        const int K = kConvKernel * kConvKernel;
-        const int N = kNumFilters;
-
-        cv::Mat src = make_test_image_f32(H, W);
-        cv::Mat weights = make_filter_bank_f32(kConvKernel, kNumFilters);
-
-        // Verify filter 0 against cv::filter2D
-        cv::Mat kernel0(kConvKernel, kConvKernel, CV_32FC1);
-        for (int i = 0; i < K; ++i)
-            kernel0.at<float>(i / kConvKernel, i % kConvKernel) = weights.at<float>(i, 0);
-        cv::Mat ref;
-        cv::filter2D(src, ref, CV_32F, kernel0, cv::Point(-1, -1), 0.0, cv::BORDER_CONSTANT);
-
-        std::vector<float> col;
-        std::vector<float> out(static_cast<std::size_t>(M) * N);
-        im2col_f32(src, kConvKernel, col);
-        GemmFn(col.data(), weights.ptr<float>(), out.data(), M, N, K);
-
-        double max_err = 0.0;
-        for (int y = 0; y < H; ++y)
-        {
-            const float *ref_row = ref.ptr<float>(y);
-            for (int x = 0; x < W; ++x)
-            {
-                const float got = out[(static_cast<std::size_t>(y) * W + x) * N];
-                max_err = std::max(max_err, static_cast<double>(std::fabs(got - ref_row[x])));
-            }
-        }
-        if (max_err > 1e-4)
-        {
-            state.SkipWithError("im2col + GEMM differs from cv::filter2D");
-            return;
-        }
-
-        for (auto _ : state)
-        {
-            im2col_f32(src, kConvKernel, col);
-            GemmFn(col.data(), weights.ptr<float>(), out.data(), M, N, K);
-            benchmark::DoNotOptimize(out.data());
-        }
-        const double flops = 2.0 * M * K * N;
-        state.counters["GFLOP/s"] =
-            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
-    }
-
     void configure_gemm(benchmark::Benchmark *b)
     {
         b->Arg(256)
@@ -341,29 +172,7 @@ namespace
             ->ReportAggregatesOnly(true);
     }
 
-    // Benchmarks: Pixel Color Matrix Transform ((H*W) x 3) * (3 x 3) vs cv::transform
-
-    void color_transform_gemm_f32(const cv::Mat &src, const float *M3x3, cv::Mat &dst)
-    {
-        const int H = src.rows;
-        const int W = src.cols;
-        dst.create(H, W, CV_32FC3);
-
-        for (int y = 0; y < H; ++y)
-        {
-            const float *s = src.ptr<float>(y);
-            float *d = dst.ptr<float>(y);
-            for (int x = 0; x < W; ++x)
-            {
-                const float r = s[3 * x + 0];
-                const float g = s[3 * x + 1];
-                const float b = s[3 * x + 2];
-                d[3 * x + 0] = r * M3x3[0] + g * M3x3[1] + b * M3x3[2];
-                d[3 * x + 1] = r * M3x3[3] + g * M3x3[4] + b * M3x3[5];
-                d[3 * x + 2] = r * M3x3[6] + g * M3x3[7] + b * M3x3[8];
-            }
-        }
-    }
+    // Pixel Color Matrix Transform via OpenCV cv::transform
 
     void bm_color_transform_cv(benchmark::State &state)
     {
@@ -372,12 +181,13 @@ namespace
         cv::Mat src(H, W, CV_32FC3), dst(H, W, CV_32FC3);
         cv::randu(src, 0.0f, 1.0f);
 
-        const cv::Matx33f sepia(0.393f, 0.769f, 0.189f, 0.349f, 0.686f, 0.168f, 0.272f, 0.534f,
-                                0.131f);
+        const cv::Matx33f sepia_matx(0.393f, 0.769f, 0.189f, 0.349f, 0.686f, 0.168f, 0.272f,
+                                     0.534f, 0.131f);
+        const cv::Mat sepia(sepia_matx);
 
         for (auto _ : state)
         {
-            cv::transform(src, dst, sepia);
+            opencv_transform_f32(src, sepia, dst);
             benchmark::DoNotOptimize(dst.data);
         }
         const double flops = 2.0 * H * W * 3 * 3;
@@ -385,54 +195,210 @@ namespace
             benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
     }
 
-    void bm_color_transform_gemm(benchmark::State &state)
+    //  Rectangular & specialized OpenCV matrix multiplication variants 
+
+    void bm_cv_gemm_f32_rect(benchmark::State &state)
     {
-        const int H = static_cast<int>(state.range(0));
-        const int W = H;
-        cv::Mat src(H, W, CV_32FC3), dst, ref;
-        cv::randu(src, 0.0f, 1.0f);
+        const int M = static_cast<int>(state.range(0));
+        const int K = M / 2;
+        const int N = (M * 3) / 4;
+        cv::Mat A(M, K, CV_32F), B(K, N, CV_32F), C(M, N, CV_32F);
+        cv::randu(A, 0.0f, 1.0f);
+        cv::randu(B, 0.0f, 1.0f);
 
-        const float M[9] = {0.393f, 0.769f, 0.189f, 0.349f, 0.686f, 0.168f, 0.272f, 0.534f, 0.131f};
-        const cv::Matx33f sepia(M);
-
-        cv::transform(src, ref, sepia);
-        color_transform_gemm_f32(src, M, dst);
-        if (cv::norm(dst, ref, cv::NORM_INF) > 1e-4)
+        for (auto _ : state)
         {
-            state.SkipWithError("color_transform_gemm_f32 differs from cv::transform");
+            opencv_gemm_f32(A, B, C);
+            benchmark::DoNotOptimize(C.data);
+        }
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(2.0 * M * K * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_gemm_axpb_f64_rect(benchmark::State &state)
+    {
+        const int M = static_cast<int>(state.range(0));
+        const int K = M / 2;
+        const int N = (M * 3) / 4;
+        cv::Mat A(M, K, CV_64F), B(N, K, CV_64F), D(M, N, CV_64F), C(M, N, CV_64F);
+        cv::randu(A, 0.0, 1.0);
+        cv::randu(B, 0.0, 1.0);
+        cv::randu(D, 0.0, 1.0);
+
+        const cv::Mat ref = 1.5 * (A * B.t()) + 0.5 * D;
+        opencv_gemm_axpb_f64(A, B, D, C, 1.5, 0.5, cv::GEMM_2_T);
+        if (cv::norm(C, ref, cv::NORM_INF) > 1e-9)
+        {
+            state.SkipWithError("opencv_gemm_axpb_f64 differs from reference");
             return;
         }
 
         for (auto _ : state)
         {
-            color_transform_gemm_f32(src, M, dst);
-            benchmark::DoNotOptimize(dst.data);
+            opencv_gemm_axpb_f64(A, B, D, C, 1.5, 0.5, cv::GEMM_2_T);
+            benchmark::DoNotOptimize(C.data);
         }
-        const double flops = 2.0 * H * W * 3 * 3;
         state.counters["GFLOP/s"] =
-            benchmark::Counter(flops * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+            benchmark::Counter(2.0 * M * K * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_gemm_complex_f64_rect(benchmark::State &state)
+    {
+        const int M = static_cast<int>(state.range(0));
+        const int K = M / 2;
+        const int N = (M * 3) / 4;
+        cv::Mat A(M, K, CV_64FC2), B(K, N, CV_64FC2), C(M, N, CV_64FC2);
+        cv::randu(A, cv::Scalar::all(0.0), cv::Scalar::all(1.0));
+        cv::randu(B, cv::Scalar::all(0.0), cv::Scalar::all(1.0));
+
+        for (auto _ : state)
+        {
+            opencv_gemm_complex_f64(A, B, C);
+            benchmark::DoNotOptimize(C.data);
+        }
+        // Complex multiply-add: 8 FLOPs per complex MAC
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(8.0 * M * K * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_matmul_expr_f64_rect(benchmark::State &state)
+    {
+        const int M = static_cast<int>(state.range(0));
+        const int K = M / 2;
+        const int N = (M * 3) / 4;
+        cv::Mat A(M, K, CV_64F), B(K, N, CV_64F), C, ref;
+        cv::randu(A, 0.0, 1.0);
+        cv::randu(B, 0.0, 1.0);
+
+        cv::gemm(A, B, 1.0, cv::Mat(), 0.0, ref);
+        opencv_matmul_expr_f64(A, B, C);
+        if (cv::norm(C, ref, cv::NORM_INF) > 1e-9)
+        {
+            state.SkipWithError("opencv_matmul_expr_f64 differs from cv::gemm");
+            return;
+        }
+
+        for (auto _ : state)
+        {
+            opencv_matmul_expr_f64(A, B, C);
+            benchmark::DoNotOptimize(C.data);
+        }
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(2.0 * M * K * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_matmul_expr_f32_rect(benchmark::State &state)
+    {
+        const int M = static_cast<int>(state.range(0));
+        const int K = M / 2;
+        const int N = (M * 3) / 4;
+        cv::Mat A(M, K, CV_32F), B(K, N, CV_32F), C, ref;
+        cv::randu(A, 0.0f, 1.0f);
+        cv::randu(B, 0.0f, 1.0f);
+
+        cv::gemm(A, B, 1.0, cv::Mat(), 0.0, ref);
+        opencv_matmul_expr_f32(A, B, C);
+        if (cv::norm(C, ref, cv::NORM_INF) > 1e-3)
+        {
+            state.SkipWithError("opencv_matmul_expr_f32 differs from cv::gemm");
+            return;
+        }
+
+        for (auto _ : state)
+        {
+            opencv_matmul_expr_f32(A, B, C);
+            benchmark::DoNotOptimize(C.data);
+        }
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(2.0 * M * K * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_mul_transposed_f64(benchmark::State &state)
+    {
+        const int N = static_cast<int>(state.range(0));
+        const int M = N * 2;
+        cv::Mat A(M, N, CV_64F), C(N, N, CV_64F), ref;
+        cv::randu(A, 0.0, 1.0);
+
+        cv::gemm(A, A, 1.0, cv::Mat(), 0.0, ref, cv::GEMM_1_T);
+        opencv_mul_transposed_f64(A, C, true);
+        if (cv::norm(C, ref, cv::NORM_INF) > 1e-8)
+        {
+            state.SkipWithError("opencv_mul_transposed_f64 differs from A^T * A");
+            return;
+        }
+
+        for (auto _ : state)
+        {
+            opencv_mul_transposed_f64(A, C, true);
+            benchmark::DoNotOptimize(C.data);
+        }
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(2.0 * M * N * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_mul_transposed_delta_f64(benchmark::State &state)
+    {
+        const int N = static_cast<int>(state.range(0));
+        const int M = N * 2;
+        cv::Mat A(M, N, CV_64F), delta(1, N, CV_64F), C(N, N, CV_64F), ref;
+        cv::randu(A, 0.0, 1.0);
+        cv::randu(delta, 0.0, 1.0);
+
+        const cv::Mat centered = A - cv::repeat(delta, M, 1);
+        cv::gemm(centered, centered, 0.5, cv::Mat(), 0.0, ref, cv::GEMM_1_T);
+        opencv_mul_transposed_f64(A, C, true, delta, 0.5);
+        if (cv::norm(C, ref, cv::NORM_INF) > 1e-8)
+        {
+            state.SkipWithError("opencv_mul_transposed_f64(delta) differs from reference");
+            return;
+        }
+
+        for (auto _ : state)
+        {
+            opencv_mul_transposed_f64(A, C, true, delta, 0.5);
+            benchmark::DoNotOptimize(C.data);
+        }
+        state.counters["GFLOP/s"] =
+            benchmark::Counter(2.0 * M * N * N * 1e-9, benchmark::Counter::kIsIterationInvariantRate);
+    }
+
+    void bm_cv_matx_mul_2x3_3x4(benchmark::State &state)
+    {
+        const cv::Matx<float, 2, 3> A(1, 2, 3, 4, 5, 6);
+        const cv::Matx<float, 3, 4> B(7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18);
+        const cv::Matx<float, 2, 4> C = opencv_matx_mul_2x3_3x4(A, B);
+        if (std::fabs(C(0, 0) - 74.0f) > 1e-5f || std::fabs(C(1, 3) - 218.0f) > 1e-5f)
+        {
+            state.SkipWithError("opencv_matx_mul_2x3_3x4 produced unexpected result");
+            return;
+        }
+
+        for (auto _ : state)
+        {
+            auto res = opencv_matx_mul_2x3_3x4(A, B);
+            benchmark::DoNotOptimize(res);
+        }
     }
 
     BENCHMARK(bm_cv_gemm_f64)->Apply(configure_gemm);
 #if defined(MATMUL_HAVE_NEON)
     BENCHMARK(bm_neon_4x4_cv_mat_f64)->Apply(configure_gemm);
 #endif
-#if defined(MATMUL_HAVE_ACCELERATE)
+#if defined(MATMUL_HAVE_ACCELERATE) || defined(MATMUL_HAVE_CBLAS)
     BENCHMARK(bm_accelerate_cv_mat_f64)->Apply(configure_gemm);
 #endif
 
-    BENCHMARK(bm_conv2d_naive)->Apply(configure_conv);
     BENCHMARK(bm_conv2d_filter2d)->Apply(configure_conv);
-    BENCHMARK_TEMPLATE(bm_conv2d_im2col, gemm_rect_ikj_f32)
-        ->Name("bm_conv2d_im2col_ikj")
-        ->Apply(configure_conv);
-#if defined(__aarch64__)
-    BENCHMARK_TEMPLATE(bm_conv2d_im2col, gemm_rect_neon_f32)
-        ->Name("bm_conv2d_im2col_neon")
-        ->Apply(configure_conv);
-#endif
-
     BENCHMARK(bm_color_transform_cv)->Apply(configure_gemm);
-    BENCHMARK(bm_color_transform_gemm)->Apply(configure_gemm);
+
+    BENCHMARK(bm_cv_gemm_f32_rect)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_gemm_axpb_f64_rect)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_gemm_complex_f64_rect)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_matmul_expr_f64_rect)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_matmul_expr_f32_rect)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_mul_transposed_f64)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_mul_transposed_delta_f64)->Apply(configure_gemm);
+    BENCHMARK(bm_cv_matx_mul_2x3_3x4)->Repetitions(5)->ReportAggregatesOnly(true);
 }
 BENCHMARK_MAIN();

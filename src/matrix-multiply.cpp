@@ -4,9 +4,6 @@
 #include <cstddef>
 #include <vector>
 
-#if defined(MATMUL_HAVE_ACCELERATE)
-#include <Accelerate/Accelerate.h>
-#endif
 #if defined(MATMUL_HAVE_NEON)
 #include <arm_neon.h>
 #endif
@@ -568,16 +565,6 @@ namespace calculate_matrix
         }
     }
 
-#if defined(MATMUL_HAVE_ACCELERATE)
-    // Reference point: Apple Accelerate. C = 1.0 * A * B + 0.0 * C.
-    void accelerate_dgemm_matrix_multiply(double *C, const double *A, const double *B, int N)
-    {
-        assert(N >= 0);
-
-        cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasNoTrans, N, N, N, 1.0, A, N, B, N, 0.0, C, N);
-    }
-#endif
-
 #if defined(MATMUL_HAVE_NEON)
     // 4x4 NEON micro-kernel: a 4x4 block of C is kept in eight registers while
     // kb rows of the packed B strip are folded into it.
@@ -722,22 +709,22 @@ namespace calculate_matrix
     }
 #endif
 
-    //   void gemm_ikj(std::span<double> C, std::span<const double> A,
-    //                 std::span<const double> B, int M, int N, int K);
-    //   // Call: gemm_ikj(C_vec, A_vec, B_vec, M, N, K);  // vector/array -> span
-    template <typename T> void gemm_ikj_impl(T *C, const T *A, const T *B, int M, int N, int K)
+    namespace
     {
-        std::fill_n(C, static_cast<std::size_t>(M) * N, T(0));
-        for (int i = 0; i < M; ++i)
+        template <typename T> void gemm_ikj_impl(T *C, const T *A, const T *B, int M, int N, int K)
         {
-            T *c_row = C + static_cast<std::size_t>(i) * N;
-            const T *a_row = A + static_cast<std::size_t>(i) * K;
-            for (int k = 0; k < K; ++k)
+            std::fill_n(C, static_cast<std::size_t>(M) * N, T(0));
+            for (int i = 0; i < M; ++i)
             {
-                const T a_ik = a_row[k];
-                const T *b_row = B + static_cast<std::size_t>(k) * N;
-                for (int j = 0; j < N; ++j)
-                    c_row[j] += a_ik * b_row[j];
+                T *c_row = C + static_cast<std::size_t>(i) * N;
+                const T *a_row = A + static_cast<std::size_t>(i) * K;
+                for (int k = 0; k < K; ++k)
+                {
+                    const T a_ik = a_row[k];
+                    const T *b_row = B + static_cast<std::size_t>(k) * N;
+                    for (int j = 0; j < N; ++j)
+                        c_row[j] += a_ik * b_row[j];
+                }
             }
         }
     }
@@ -825,4 +812,80 @@ namespace calculate_matrix
         }
     }
 #endif
+
+    void conv2d_naive_f32(const float *src, int H, int W, const float *kernel, int K, float *dst)
+    {
+        const int pad = K / 2;
+        for (int y = 0; y < H; ++y)
+        {
+            float *dst_row = dst + static_cast<std::size_t>(y) * W;
+            for (int x = 0; x < W; ++x)
+            {
+                float sum = 0.0f;
+                for (int ky = 0; ky < K; ++ky)
+                {
+                    const int sy = y + ky - pad;
+                    if (sy < 0 || sy >= H)
+                        continue;
+                    const float *src_row = src + static_cast<std::size_t>(sy) * W;
+                    const float *ker_row = kernel + static_cast<std::size_t>(ky) * K;
+                    for (int kx = 0; kx < K; ++kx)
+                    {
+                        const int sx = x + kx - pad;
+                        if (sx >= 0 && sx < W)
+                            sum += src_row[sx] * ker_row[kx];
+                    }
+                }
+                dst_row[x] = sum;
+            }
+        }
+    }
+
+    void im2col_f32(const float *src, int H, int W, int K, float *col)
+    {
+        const int pad = K / 2;
+        const int kk = K * K;
+        for (int y = 0; y < H; ++y)
+        {
+            for (int x = 0; x < W; ++x)
+            {
+                float *dst_patch = col + (static_cast<std::size_t>(y) * W + x) * kk;
+                int idx = 0;
+                for (int ky = 0; ky < K; ++ky)
+                {
+                    const int sy = y + ky - pad;
+                    if (sy < 0 || sy >= H)
+                    {
+                        for (int kx = 0; kx < K; ++kx)
+                            dst_patch[idx++] = 0.0f;
+                        continue;
+                    }
+                    const float *src_row = src + static_cast<std::size_t>(sy) * W;
+                    for (int kx = 0; kx < K; ++kx)
+                    {
+                        const int sx = x + kx - pad;
+                        dst_patch[idx++] = (sx >= 0 && sx < W) ? src_row[sx] : 0.0f;
+                    }
+                }
+            }
+        }
+    }
+
+    void color_transform_gemm_f32(const float *src, int H, int W, const float *M3x3, float *dst)
+    {
+        for (int y = 0; y < H; ++y)
+        {
+            const float *s = src + static_cast<std::size_t>(y) * W * 3;
+            float *d = dst + static_cast<std::size_t>(y) * W * 3;
+            for (int x = 0; x < W; ++x)
+            {
+                const float r = s[3 * x + 0];
+                const float g = s[3 * x + 1];
+                const float b = s[3 * x + 2];
+                d[3 * x + 0] = r * M3x3[0] + g * M3x3[1] + b * M3x3[2];
+                d[3 * x + 1] = r * M3x3[3] + g * M3x3[4] + b * M3x3[5];
+                d[3 * x + 2] = r * M3x3[6] + g * M3x3[7] + b * M3x3[8];
+            }
+        }
+    }
 }
