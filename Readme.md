@@ -1,16 +1,16 @@
 ## Fast Matrix Multiplication in C++20, Compared with OpenCV
 
-A C++20 study of dense matrix multiplication (`C = A × B`) built up step by step in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp), verified with `--verify`, and benchmarked against Apple Accelerate / CBLAS [`accelerate-gemm.cpp` and OpenCV 4 ([`src/opencv-gemm.cpp`](opencv-gemm.cpp)).
+A C++20 investigation of dense matrix multiplication (`C = A × B`) built up step by step in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp), verified with `--verify`, and benchmarked against Apple Accelerate / CBLAS [`accelerate-gemm.cpp` and OpenCV 4 ([`src/opencv-gemm.cpp`](opencv-gemm.cpp)).
 
 ## 1. Matrix Multiplication Progression
 
-Steps 1–6 are hand-written in [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) and call no library. The only library result in this section is `accelerate_dgemm` (Apple Accelerate), included as a baseline. OpenCV is covered separately in [section 2](#2-opencv-comparison).
+Steps 1–6 are hand-written and call no library.
 
-| Code | Where | Used in |
+| Code | File | Sections |
 | :--- | :--- | :--- |
-| **Custom** (hand-written C++ and NEON) | [`matrix-multiply.cpp`](./src/matrix-multiply.cpp) | Sections 1 and 2 |
-| **Apple Accelerate** (`cblas_dgemm`) | [`accelerate-gemm.cpp`](./src/accelerate-gemm.cpp) | Sections 1 and 2, as the vendor baseline |
-| **OpenCV 4** (`cv::gemm`, `cv::filter2D`, `cv::transform`, …) | [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp) | Section 2 only (`matmul-opencv` target) |
+| Custom C++ / NEON | [`src/matrix-multiply.cpp`](./src/matrix-multiply.cpp) | 1, 2 |
+| Apple Accelerate (baseline) | [`src/accelerate-gemm.cpp`](./src/accelerate-gemm.cpp) | 1, 2 |
+| OpenCV 4 | [`src/opencv-gemm.cpp`](./src/opencv-gemm.cpp) | 2 |
 
 1. **Naive (`bad_matrix_multiply`):** `i-j-k` dot products on `double**`; `B` is read with column stride. *Custom.*
 2. **Loop interchange (`fast_matrix_multiply`):** `i-k-j` order; `B` and `C` rows stream sequentially (**7.7×** faster at `N = 1024`). *Custom.*
